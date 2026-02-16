@@ -51,7 +51,7 @@ class TwoStrainSIRSAsym:
         self.t = None
         self.stochastic_intervention = stochastic_intervention
         self.rng = np.random.default_rng()
-        self.sigma= 0.2
+        self.sigma= 0.4
         self.interventions = interventions or []
     
     def run(self):
@@ -91,6 +91,7 @@ class TwoStrainSIRSAsym:
                 xi2 = self.rng.normal(0.0, 1.0)
                 beta1 = max(0.0, self.beta1 * (1 + self.sigma * xi1))
                 beta2 = max(0.0, self.beta2 * (1 + self.sigma * xi2))
+                
             else:
                 beta1 = self.beta1
                 beta2 = self.beta2
@@ -294,56 +295,45 @@ def compare_beta2_infections(
 
 
 # Example usage:
-infections = []
-betas = []
-for beta2 in np.linspace(0.85, 0.9,12):
-    betas.append(beta2)
-    m = TwoStrainSIRSAsym(
-        N=1_000_000,
-        I10=100,
-        I20=20,
-        beta1=0.4,
-        beta2=beta2, # <-- set this
-        gamma1=1/5,
-        gamma2=1/5,
-        omega1=0,
-        omega2=0,
-        t_seed=70,
-        t_max=500,
-        dt=0.1,
-        R10=0.0,
-        R20=0.0,
-        is_R1_to_I2=False,
-        interventions=[(20,80, 0.3, 0.3)]
-        )
-    
-    t, S, I1, I2, R1, R2 = m.run()
-    # m.plot()
-    infections.append(m.i1_near_extinction_fraction())
-plt.plot(betas,infections)
-plt.xlabel('beta2')
-plt.ylabel('infection % to kill strain 1')
-plt.show()
+def sweep_beta2_threshold(
+    beta2_min=0.5,
+    beta2_max=0.90,
+    n_points=15,
+    interventions=None,
+    plot=True,
+):
+    betas = np.linspace(beta2_min, beta2_max, n_points)
+    infections = []
 
-# Matching beta
-m = TwoStrainSIRSAsym(
-        N=40_000,
-        I10=10,
-        I20=0,
-        beta1=0.4,
-        beta2=0, # <-- set this
-        gamma1=0.14,
-        gamma2=1/5,
-        omega1=1/100,
-        omega2=0,
-        t_seed=70,
-        t_max=500,
-        dt=0.1,
-        R10=0.0,
-        R20=0.0,
-        is_R1_to_I2=False,
-        interventions=[]
+    for beta2 in betas:
+        m = TwoStrainSIRSAsym(
+            N=1_000_000,
+            I10=100,
+            I20=20,
+            beta1=0.4,
+            beta2=beta2,
+            gamma1=1/5,
+            gamma2=1/5,
+            omega1=0,
+            omega2=0,
+            t_seed=70,
+            t_max=500,
+            dt=0.1,
+            R10=0.0,
+            R20=0.0,
+            is_R1_to_I2=False,
+            interventions=interventions,
         )
-    
-t, S, I1, I2, R1, R2 = m.run()
-m.plot()
+
+        m.run()
+        infections.append(m.i1_near_extinction_fraction())
+
+    if plot:
+        plt.plot(betas, infections)
+        plt.xlabel("beta2")
+        plt.ylabel("infection % to kill strain 1")
+        plt.show()
+
+    return betas, infections
+
+

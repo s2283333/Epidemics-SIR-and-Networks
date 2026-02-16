@@ -3,106 +3,12 @@ from matplotlib.animation import FuncAnimation
 import numpy as np
 import scipy.sparse as sp
 import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap, BoundaryNorm
+from scipy.ndimage import gaussian_filter1d
+
 
 
 class Networks:
-    @staticmethod
-    def _trunc_normal_int(rng, mean, sd, low, high):
-        x = int(round(rng.normal(mean, sd)))
-        return max(low, min(high, x))
-
-
-    @staticmethod
-    def small_world_2d_truncnorm_local(L, r, k_mean, k_sd, seed=None):
-        """
-        2D grid (no wrap-around) where each node is assigned a target degree k_i drawn
-        from a truncated normal distribution. Undirected edges are added locally while
-        respecting both endpoints' remaining degree "capacity" (no node exceeds k_i).
-        Uses sets to avoid duplicates; converts to symmetric CSR adjacency at the end.
-
-        Parameters
-        ----------
-        L : int
-            Grid side length, N = L*L.
-        r : int
-            Neighbourhood radius (Chebyshev):
-            r=1 -> up to 8 local neighbours
-            r=2 -> up to 24 local neighbours
-        k_mean, k_sd : float
-            Mean and std for target degree per node (truncated to [0, max_k]).
-        seed : int or None
-
-        Returns
-        -------
-        A : csr_matrix (N,N)
-            Symmetric adjacency matrix, zero diagonal.
-        """
-        rng = np.random.default_rng(seed)
-        N = L * L
-
-        def idx(x, y):
-            return x * L + y
-
-        offsets = [(dx, dy)
-                for dx in range(-r, r + 1)
-                for dy in range(-r, r + 1)
-                if not (dx == 0 and dy == 0)]
-        max_k = len(offsets)
-
-        k_target = np.empty(N, dtype=np.int32)
-        for x in range(L):
-            for y in range(L):
-                i = idx(x, y)
-                k_target[i] = Networks._trunc_normal_int(rng, k_mean, k_sd, 0, max_k)
-
-        adj = [set() for _ in range(N)]
-        order = rng.permutation(N)
-
-        for i in order:
-            if k_target[i] <= 0:
-                continue
-
-            x, y = divmod(i, L)
-
-            candidates = []
-            for dx, dy in offsets:
-                x2, y2 = x + dx, y + dy
-                if 0 <= x2 < L and 0 <= y2 < L:
-                    j = idx(x2, y2)
-                    if j == i:
-                        continue
-                    if j in adj[i]:
-                        continue
-                    if len(adj[j]) >= k_target[j]:
-                        continue
-                    candidates.append(j)
-
-            if not candidates:
-                continue
-
-            rng.shuffle(candidates)
-
-            for j in candidates:
-                if len(adj[i]) >= k_target[i]:
-                    break
-                if len(adj[j]) >= k_target[j]:
-                    continue
-                if j in adj[i]:
-                    continue
-                adj[i].add(j)
-                adj[j].add(i)
-
-        rows, cols = [], []
-        for i in range(N):
-            for j in adj[i]:
-                rows.append(i)
-                cols.append(j)
-
-        data = np.ones(len(rows), dtype=np.int8)
-        A = sp.coo_matrix((data, (rows, cols)), shape=(N, N)).tocsr()
-        A.setdiag(0)
-        A.eliminate_zeros()
-        return A
     
     @staticmethod
     def animate_sirs_grid(A, L, beta, gamma, omega, I0=5, T=300, seed=0, interval_ms=50):
@@ -117,15 +23,18 @@ class Networks:
         state[init] = 1
 
         fig, ax = plt.subplots(figsize=(6, 6))
-        ax.set_title("Infected individuals only")
+        ax.set_title("SIRS dynamics")
         ax.set_xticks([])
         ax.set_yticks([])
 
-        # binary image: infected = 1, others = 0
+        # discrete colormap: S=green, I=red, R=blue
+        cmap = ListedColormap(["green", "red", "blue"])
+        norm = BoundaryNorm([-0.5, 0.5, 1.5, 2.5], cmap.N)
+
         img = ax.imshow(
-            (state == 1).reshape(L, L),
-            vmin=0, vmax=1,
-            cmap="Reds",
+            state.reshape(L, L),
+            cmap=cmap,
+            norm=norm,
             interpolation="nearest"
         )
 
@@ -139,11 +48,12 @@ class Networks:
             if frame > 0:
                 state = Networks.sirs_step(A, state, beta, gamma, omega, rng)
 
-            infected_grid = (state == 1).reshape(L, L)
-            img.set_data(infected_grid)
+            img.set_data(state.reshape(L, L))
 
+            S = np.sum(state == 0)
             I = np.sum(state == 1)
-            txt.set_text(f"t={frame}   I={I}")
+            R = np.sum(state == 2)
+            txt.set_text(f"t={frame}   S={S}   I={I}   R={R}")
             return img, txt
 
         anim = FuncAnimation(fig, update, frames=T + 1, interval=interval_ms, blit=False)
@@ -152,103 +62,58 @@ class Networks:
         return anim
 
     @staticmethod
-    def small_world_network(N, k, p, seed=None, varying_neighbours=True):
-        """
-        N : number of nodes
-        k : each node connected to k nearest neighbours (k even)
-        p : rewiring probability
-        varying_neighbours : trialling the theory that not everyone has the same number of contacts(random)
-        """
+    def snapshot_sirs_grid(A, L, beta, gamma, omega, t_freeze=50,
+                        I0=10, seed=0, p=0):
         rng = np.random.default_rng(seed)
+        N = L * L
+        if A.shape != (N, N):
+            raise ValueError(f"A must be shape ({N},{N}) for L={L}")
 
-        # Data to be stored in rows and columns eg if i=10 and i=11 are connected
-        # then row=10 column=11.
-        rows = []
-        cols = []
+        # init state
+        state = np.zeros(N, dtype=np.int8)   # 0=S, 1=I, 2=R
+        init = rng.choice(N, size=min(I0, N), replace=False)
+        state[init] = 1
 
-        for i in range(N):
-            
-            # Setting differing numbers of neighbours(if varying_neighbours is true)
-            if varying_neighbours:
-                k_i = max(0, int(round(k * rng.normal(loc=1.0, scale=2))))  # scale controls variation
-            else:
-                k_i = k
-                
-            half = k_i // 2
-            
-            # giving connections (only forwards).
-            for d in range(1, half + 1):
-                
-                j = (i + d) % N
-                # Edge case resolving
-                if i < j:
-                    rows.append(i)
-                    cols.append(j)
-                else:
-                    rows.append(j)
-                    cols.append(i)
+        # evolve to t_freeze
+        for t in range(1, t_freeze + 1):
+            state = Networks.sirs_step(A, state, beta, gamma, omega, rng)
 
-        rows = np.array(rows, dtype=int)
-        cols = np.array(cols, dtype=int)
+        # plot frozen state
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.set_title(f"SIRS Spread at t={t_freeze}")
+        ax.set_xticks([])
+        ax.set_yticks([])
 
-        
-        # Looping over all edges 
-        for idx in range(len(rows)):
-            
-            # randomly changing some to be long range
-            if rng.random() < p:
-                i = rows[idx]
-                j = cols[idx]
+        cmap = ListedColormap(["green", "red", "blue"])
+        norm = BoundaryNorm([-0.5, 0.5, 1.5, 2.5], cmap.N)
 
-                # pick a new endpoint m for edge (i, j)
-                # avoid self-loops and duplicate edges
-                while True:
-                    m = rng.integers(0, N)
-                    # Checks we dont create any double edges (or have a self connecting network)
-                    a, b = min(i, m), max(i, m)
-                    if m!=i and not ((rows == a) & (cols == b)).any():
-                        break
+        ax.imshow(
+            state.reshape(L, L),
+            cmap=cmap,
+            norm=norm,
+            interpolation="nearest"
+        )
 
-                # rewire edge to (i, m)
-                rows[idx] = min(i, m)
-                cols[idx] = max(i, m)
-                
-        data = np.ones(len(rows), dtype=np.int8)
+        S = np.sum(state == 0)
+        I = np.sum(state == 1)
+        R = np.sum(state == 2)
 
-        # matrix formation. Ensuring symetry
-        A = sp.coo_matrix((data, (rows, cols)), shape=(N, N)).tocsr()
-        A = A + A.T
+        ax.text(
+            0.02, 0.98,
+            f"t={t_freeze} days   S={100*S/N: .1f}%   I={100*I/N: .1f}%   R={100*R/N: .1f}%  p={p}",
+            transform=ax.transAxes,
+            va="top",
+            bbox=dict(facecolor="white", alpha=0.7, edgecolor="none")
+        )
 
-        return A
-    
-    
-    @staticmethod
-    def erdos_reyni_network(N, p, seed=None):
-        """
-        N : number of nodes
-        p : probability of an edge between any pair
-        """
-        rng = np.random.default_rng(seed)
+        plt.tight_layout()
+        plt.show()
 
-        rows = []
-        cols = []
+        return state
 
-        # Only loop over i < j to avoid duplicates
-        for i in range(N):
-            for j in range(i + 1, N):
-                if rng.random() < p:
-                    rows.append(i)
-                    cols.append(j)
-
-        data = np.ones(len(rows), dtype=np.int8)
-
-        # Make symmetric adjacency matrix
-        A = sp.coo_matrix((data, (rows, cols)), shape=(N, N)).tocsr()
-        A = A + A.T
-        return A
 
     @staticmethod
-    def sirs_step(A, state, beta, gamma, omega, rng):
+    def sirs_step(A, state, beta, gamma, omega, rng, is_sirs=True):
         
         infected = (state == 1)
         susceptible = (state == 0)
@@ -263,7 +128,10 @@ class Networks:
         # setting wheter each person is S I or R using random probability.
         new_I = susceptible & (rng.random(len(state)) < p_inf)
         new_R = infected & (rng.random(len(state)) < gamma)
-        new_S = recovered & (rng.random(len(state)) < omega)
+        if is_sirs:
+            new_S = recovered & (rng.random(len(state)) < omega)
+        else:
+            new_S = 0
 
         # setting the new state to be fed back into the function.
         nxt = state.copy()
@@ -271,17 +139,17 @@ class Networks:
         nxt[new_R] = 2
         nxt[new_S] = 0
         return nxt
-    
+        
     @staticmethod
-    def run_sirs(A, beta, gamma, omega, I0=3, T=300, seed=0, init_state=None):
+    def run_sirs(A, beta, gamma, omega, I0=3, T=300, seed=0, init_state=None, is_sirs=True):
         """
         Runs SIRS on a fixed adjacency matrix A for T steps.
 
         Returns:
             t: (T+1,) array
-            S: (T+1,) counts
-            I: (T+1,) counts
-            R: (T+1,) counts
+            S, I, R: (T+1,) counts
+            new_inf: (T+1,) new infections per step (S->I transitions), new_inf[0]=0
+            ever_infected_mask: (N,) bool, True if node ever infected (including initial)
             state: final state array (N,)
         """
         rng = np.random.default_rng(seed)
@@ -301,304 +169,400 @@ class Networks:
         I = np.zeros(T + 1, dtype=int)
         R = np.zeros(T + 1, dtype=int)
 
+        new_inf = np.zeros(T + 1, dtype=int)  # new infections per step
+        ever_infected_mask = (state == 1).copy()  # initial infected count as "ever infected"
+
         S[0] = np.sum(state == 0)
         I[0] = np.sum(state == 1)
         R[0] = np.sum(state == 2)
 
         for step in range(1, T + 1):
-            state = Networks.sirs_step(A, state, beta, gamma, omega, rng)
+            prev_state = state  # keep reference to compare transitions
+            state = Networks.sirs_step(A, prev_state, beta, gamma, omega, rng, is_sirs=is_sirs)
+
+            # New infections this step: were susceptible (0), became infected (1)
+            newly = (prev_state == 0) & (state == 1)
+            new_inf[step] = int(np.sum(newly))
+
+            # Update ever infected (anyone infected at any time)
+            ever_infected_mask |= (state == 1)
+
             S[step] = np.sum(state == 0)
             I[step] = np.sum(state == 1)
             R[step] = np.sum(state == 2)
 
-        return t, S, I, R, state
+        # At the end you can compute:
+        # ever_infected_count = int(ever_infected_mask.sum())
+        # ever_infected_pct = 100.0 * ever_infected_count / N
+
+        return t, S, I, R, new_inf, ever_infected_mask, state
+
 
     @staticmethod
-    def plot_sirs_time_series(t, S, I, R, ax=None, title="SIRS on network: S(t), I(t), R(t)"):
+    def plot_sirs_time_series(t, S, I, R, L, ax=None, vline=None, title="SIRS on network: I(t)"):
         """
         Standard static plot for the output of run_sirs.
         """
         if ax is None:
             fig, ax = plt.subplots(figsize=(8, 4))
-
-        # ax.plot(t, S, label="S", linewidth=2)
-        ax.plot(t, I, label="I", linewidth=2)
-        # ax.plot(t, R, label="R", linewidth=2)
-        ax.set_xlabel("time step")
-        ax.set_ylabel("count")
+        percentage_I = 100*I/L**2
+        percentage_S = 100*S/L**2
+        percentage_R = 100*R/L**2
+        # ax.plot(t, percentage_S, label="S", linewidth=2)
+        ax.plot(t, percentage_I, linewidth=2)
+        # ax.plot(t, percentage_R, label="R", linewidth=2)
+        ax.set_xlabel("Time (days)")
+        ax.set_ylabel("Percentage of Population Infected")
         ax.set_title(title)
-        ax.grid(True, alpha=0.3)
+        if vline:
+            ax.axvline(x=vline, label=f't={vline} days', color='red', ls='dotted')
         ax.legend()
         plt.tight_layout()
         plt.show()
 
         return ax
-
-    @staticmethod
-    # ---Below is (mostly) AI generated just so i could get a visual understanding of what was happening---
-    def animate_sirs(A, beta, gamma, omega, I0=2, T=200, seed=0, interval_ms=100):
-        rng = np.random.default_rng(seed)
-        N = A.shape[0]
-
-        # circle layout for clarity
-        ang = np.linspace(0, 2*np.pi, N, endpoint=False)
-        xy = np.c_[np.cos(ang), np.sin(ang)]
-
-        # draw edges once (upper triangle only)
-        A_up = sp.triu(A, k=1).tocoo()
-        ex, ey = [], []
-        for i, j in zip(A_up.row, A_up.col):
-            ex += [xy[i, 0], xy[j, 0], np.nan]
-            ey += [xy[i, 1], xy[j, 1], np.nan]
-
-        fig, ax = plt.subplots(figsize=(6, 6))
-        ax.set_aspect("equal")
-        ax.axis("off")
-        ax.plot(ex, ey, linewidth=0.6, alpha=0.35)
-
-        # init state
-        state = np.zeros(N, dtype=np.int8)
-        init = rng.choice(N, size=I0, replace=False)
-        state[init] = 1
-
-        scat = ax.scatter(xy[:, 0], xy[:, 1], s=90)
-        txt = ax.text(0.02, 0.98, "", transform=ax.transAxes, va="top")
-
-        def state_colors(st):
-            c = np.empty(N, dtype=object)
-            c[st == 0] = "tab:blue"   # S
-            c[st == 1] = "tab:red"    # I
-            c[st == 2] = "tab:green"  # R
-            return c
-
-        def update(frame):
-            nonlocal state
-            state = Networks.sirs_step(A, state, beta, gamma, omega, rng)
-
-            scat.set_color(state_colors(state))
-            S = np.sum(state == 0)
-            I = np.sum(state == 1)
-            R = np.sum(state == 2)
-            txt.set_text(f"t={frame:3d}   S={S}  I={I}  R={R}")
-            return scat, txt
-
-        anim = FuncAnimation(fig, update, frames=T+1, interval=interval_ms, blit=False)
-        plt.show()
-        return anim
-
-    @staticmethod
-    def animate_I_time_series(A, beta, gamma, omega, I0=3, T=300, seed=0, interval_ms=1, later_focus_time=None):
-        rng = np.random.default_rng(seed)
-        N = A.shape[0]
-
-        state = np.zeros(N, dtype=np.int8)
-        init = rng.choice(N, size=min(I0, N), replace=False)
-        state[init] = 1
-
-        t_vals = np.arange(T + 1)
-        I_vals = np.zeros(T + 1, dtype=int)
-        I_vals[0] = np.sum(state == 1)
-
-        fig, ax = plt.subplots(figsize=(7, 4))
-
-        if later_focus_time is not None:
-            ax.set_xlim(later_focus_time, T)
-            ax.set_ylim(0, N // 10)
-        else:
-            ax.set_xlim(0, T)
-            ax.set_ylim(0, N)
-
-        ax.set_xlabel("time step")
-        ax.set_ylabel("infected")
-        ax.set_title("SIRS on network: I(t)")
-
-        (line,) = ax.plot([], [], linewidth=2)
-        txt = ax.text(0.02, 0.95, "", transform=ax.transAxes, va="top")
-
-        def update(frame):
-            nonlocal state
-
-            if frame > 0:
-                state = Networks.sirs_step(A, state, beta, gamma, omega, rng)
-                I_vals[frame] = np.sum(state == 1)
-
-            if later_focus_time is not None:
-                mask = t_vals[:frame+1] >= later_focus_time
-                x = t_vals[:frame+1][mask]
-                y = I_vals[:frame+1][mask]
-            else:
-                x = t_vals[:frame+1]
-                y = I_vals[:frame+1]
-
-            line.set_data(x, y)
-            txt.set_text(f"t={frame}   I={I_vals[frame]}")
-            return line, txt
-
-        anim = FuncAnimation(
-            fig, update,
-            frames=T + 1,
-            interval=interval_ms,
-            blit=False
-        )
-
-        plt.tight_layout()
-        plt.show()
-        return anim
     
     @staticmethod
     def max_fft(I, dt=1.0, burn=200, max_period=1000):
-        I = np.asarray(I, float)[burn:]   # remove transient
+        I = np.asarray(I, float)[burn:]      # remove transient
         I = I - I.mean()
         I = I * np.hanning(len(I))
 
         F = np.fft.rfft(I)
         freqs = np.fft.rfftfreq(len(I), d=dt)
         amp = np.abs(F)
-        amp[0] = 0.0                      # remove DC
+        amp[0] = 0.0                         # remove DC
 
-        # convert frequency -> period
-        mask = freqs > 0
-        periods = 1.0 / freqs[mask]
-        mask2 = periods < 400
-        amp1 = amp[mask]
-        amp= amp1[mask2]
-
-        return max(np.abs(amp))
-    
-    @staticmethod
-    def plot_fft(I, dt=1.0, burn=200, max_period=1000):
-        I = np.asarray(I, float)[burn:]   # remove transient
-        I = I - I.mean()
-        I = I * np.hanning(len(I))
-
-        F = np.fft.rfft(I)
-        freqs = np.fft.rfftfreq(len(I), d=dt)
-        amp = np.abs(F)
-        amp[0] = 0.0                      # remove DC
-
-        # convert frequency -> period
+        # frequency -> period
         mask = freqs > 0
         periods = 1.0 / freqs[mask]
         amp = amp[mask]
-        mask2 = periods < 400
-        amp2 = amp[mask2]
-        print(amp2.max())
+
+        # limit to max period
+        mask2 = periods < max_period
+        periods = periods[mask2]
+        amp = amp[mask2]
+
+        idx = np.argmax(amp)
+
+        max_amp = amp[idx]
+        dominant_period = periods[idx]
+
+        return max_amp, dominant_period
+    
+    @staticmethod
+    def plot_fft(I, dt=1.0, burn=200, max_period=1000, smooth_sigma=6):
+        I = np.asarray(I, float)[burn:]
+        I = I - I.mean()
+        I = I * np.hanning(len(I))
+
+        F = np.fft.rfft(I)
+        freqs = np.fft.rfftfreq(len(I), d=dt)
+        amp = np.abs(F)
+        amp[0] = 0.0
+
+        mask = freqs > 0
+        freqs = freqs[mask]
+        amp = amp[mask]
+
+        # smooth in frequency space
+        amp_smooth = gaussian_filter1d(amp, sigma=smooth_sigma)
+
+        periods = 1.0 / freqs
+        mask2 = periods < max_period
+
         plt.figure(figsize=(7,4))
-        plt.plot(periods, amp)
-        plt.xlim(0, max_period)
+        plt.plot(periods[mask2], amp_smooth[mask2])
         plt.xlabel("period (time steps)")
         plt.ylabel("amplitude")
-        plt.title("Oscillation spectrum (period domain)")
-        plt.grid(True, alpha=0.3)
+        plt.title("Oscillation spectrum (smoothed)")
         plt.tight_layout()
         plt.show()
 
+    
+    
     @staticmethod
     def small_world_2d_torus_k8(L, p=0.1, seed=None):
-        """Sets up 2d small world network 
-
-        Args:
-            L (int): size of each side of the grid
-            p (float, optional): probability of a connection getting rewired
-            seed (int, optional): seed, to make deterministic, good to be able to vary
-
-        Returns:
-            sp.coo_matrix: connections matrix.
+        """
+        2D torus Moore neighbourhood (k=8) + independent WS-style rewiring.
+        Degree is NOT preserved: nodes can end up with >8 or <8.
+        Each undirected edge is considered once; with prob p, rewire ONE endpoint
+        to a uniformly random node (avoiding self-loops and duplicates).
         """
         rng = np.random.default_rng(seed)
         N = L * L
 
         def idx(x, y):
-            """gives a unique id to each node based on position in the grid"""
             return x * L + y
 
-        # sets of connections between nodes
+        # Build initial torus Moore-neighbour graph using sets
         adj = [set() for _ in range(N)]
-
-        # Moore neighbourhood on a torus (degree = 8)
         for x in range(L):
             for y in range(L):
                 i = idx(x, y)
                 for dx in (-1, 0, 1):
                     for dy in (-1, 0, 1):
-                        if dx or dy:
-                            # Sorting edge effects
-                            j = idx((x + dx) % L, (y + dy) % L)
-                            adj[i].add(j)
-                            adj[j].add(i)
+                        if dx == 0 and dy == 0:
+                            continue
+                        j = idx((x + dx) % L, (y + dy) % L)
+                        adj[i].add(j)
+                        adj[j].add(i)
 
-        # undirected edges
+        # Consider each undirected edge once
         edges = [(i, j) for i in range(N) for j in adj[i] if i < j]
 
-        # degree-preserving rewiring (milder: mostly local swaps, occasional long-range)
         for i, j in edges:
-            if j not in adj[i] or rng.random() >= p:
+            # Edge might already have been rewired earlier; skip if gone
+            if j not in adj[i]:
+                continue
+            if rng.random() >= p:
                 continue
 
+            # Rewire the edge (i, j) by keeping i fixed and changing j -> k
+            # (You could instead choose randomly which endpoint to keep; see note below.)
+            tries = 0
+            while True:
+                k = int(rng.integers(N))
+                tries += 1
+                if k == i:
+                    continue
+                if k in adj[i]:
+                    continue
+                break
+                # (For very dense graphs you'd want a tries limit; here k=8 so it's fine.)
 
-            k = int(rng.integers(N))
-            if k == i or k == j:
-                continue
+            # Remove old edge
+            adj[i].remove(j)
+            adj[j].remove(i)
 
-            if k in adj[i]:
-                continue
+            # Add new edge
+            adj[i].add(k)
+            adj[k].add(i)
 
-            # pick l among neighbours of k (always local on torus)
-            l = int(rng.choice(list(adj[k])))
-            if l == i or j in adj[l] or l == j:
-                continue
+        # Build sparse adjacency
+        rows, cols = [], []
+        for i in range(N):
+            for j in adj[i]:
+                if i != j:
+                    rows.append(i)
+                    cols.append(j)
 
-            adj[i].remove(j); adj[j].remove(i)
-            adj[k].remove(l); adj[l].remove(k)
-            adj[i].add(k); adj[k].add(i)
-            adj[j].add(l); adj[l].add(j)
+        data = np.ones(len(rows), dtype=np.uint8)
+        A = sp.coo_matrix((data, (rows, cols)), shape=(N, N)).tocsr()
+        A.setdiag(0)
+        A.eliminate_zeros()
+        return A
 
-        rows = [i for i in range(N) for j in adj[i] if i>j]
-        cols = [j for i in range(N) for j in adj[i] if i>j]
+    
+    
 
 
-        A = sp.coo_matrix((np.ones(len(rows), dtype=np.uint8), (rows, cols)), shape=(N, N))
-        return A + A.T
-# 1. Make into proper class structure rather than just name space. with run through storing the relevant data (not just animation)
-# 2. Look at impact of varying parameters. Number of neighbours. Randomness variation. Disease parameters.
-# 3. Apply data to optimise parameters.
-# 4. Incorporate multiple waves of disease potentially?
-# 5. If looking at post restrictions era try modelling with an artificial starting point at that date.
+    @staticmethod
+    def split_local_long(A, L):
+        A = A.tocoo()
+        N = L * L
+        r, c = A.row, A.col
 
-# Things of interest:
-# 1. Higher variation in number of connections leads to more infections
-# 2. It also leads to less notable oscillations
- 
-def run_fft_over_seeds(p, n_seeds=10):
+        rx, ry = divmod(r, L)
+        cx, cy = divmod(c, L)
+
+        dx = np.abs(rx - cx); dx = np.minimum(dx, L - dx)
+        dy = np.abs(ry - cy); dy = np.minimum(dy, L - dy)
+
+        is_local = (dx <= 1) & (dy <= 1) & ~((dx == 0) & (dy == 0))
+
+        A_local = sp.coo_matrix((A.data[is_local], (r[is_local], c[is_local])), shape=(N, N)).tocsr()
+        A_long  = sp.coo_matrix((A.data[~is_local], (r[~is_local], c[~is_local])), shape=(N, N)).tocsr()
+        A_local.setdiag(0); A_local.eliminate_zeros()
+        A_long.setdiag(0);  A_long.eliminate_zeros()
+        return A_local, A_long
+
+    @staticmethod
+    def run_branching(A, L, beta, gamma, omega, I0=10, T=300, seed=0, is_sirs=False):
+        rng = np.random.default_rng(seed)
+        N = A.shape[0]
+
+        A_local, A_long = Networks.split_local_long(A, L)
+
+        state = np.zeros(N, dtype=np.int8)
+        init = rng.choice(N, size=min(I0, N), replace=False)
+        state[init] = 1
+
+        hubs = np.zeros(T + 1, dtype=int)
+
+        for t in range(1, T + 1):
+            prev_state = state
+            state = Networks.sirs_step(
+                A, prev_state, beta, gamma, omega, rng, is_sirs=is_sirs
+            )
+
+            new_I = (prev_state == 0) & (state == 1)
+            infected_prev = (prev_state == 1).astype(np.int8)
+
+            has_long  = (np.asarray(A_long  @ infected_prev).ravel() > 0)
+            has_local = (np.asarray(A_local @ infected_prev).ravel() > 0)
+
+            hubs[t] = int(np.sum(new_I & has_long & (~has_local)))
+
+        return hubs
+
+
+    @staticmethod
+    def delete_edges_random(A, q=0.1, seed=None):
+        """
+        Randomly delete a fraction q of UNDIRECTED edges from adjacency matrix A.
+        Assumes A is symmetric 0/1. Returns a new symmetric A.
+        """
+        rng = np.random.default_rng(seed)
+        A = A.tocsr()
+        N = A.shape[0]
+
+        # work in COO to enumerate edges once (i<j)
+        C = A.tocoo()
+        mask_upper = C.row < C.col
+        rows = C.row[mask_upper]
+        cols = C.col[mask_upper]
+        m = len(rows)
+
+        keep = rng.random(m) >= q  # keep with prob 1-q
+        rows_k = rows[keep]
+        cols_k = cols[keep]
+
+        # rebuild symmetric adjacency
+        r2 = np.concatenate([rows_k, cols_k])
+        c2 = np.concatenate([cols_k, rows_k])
+        data = np.ones(len(r2), dtype=np.uint8)
+
+        A2 = sp.coo_matrix((data, (r2, c2)), shape=(N, N)).tocsr()
+        A2.setdiag(0)
+        A2.eliminate_zeros()
+        return A2
+
+    @staticmethod
+    def _torus_chebyshev_dist_to_seeds(L, seed_nodes):
+        """
+        For each node on an LxL torus, compute Chebyshev (Moore) distance
+        to the nearest node in seed_nodes, with periodic boundary conditions.
+        Returns dist array of shape (N,).
+        """
+        N = L * L
+        xs = np.arange(N) // L
+        ys = np.arange(N) % L
+
+        seed_nodes = np.asarray(list(seed_nodes), dtype=int)
+        sx = seed_nodes // L
+        sy = seed_nodes % L
+
+        # Compute min Chebyshev torus distance to any seed
+        dist_min = np.full(N, np.inf, dtype=float)
+        for k in range(len(seed_nodes)):
+            dx = np.abs(xs - sx[k])
+            dx = np.minimum(dx, L - dx)
+            dy = np.abs(ys - sy[k])
+            dy = np.minimum(dy, L - dy)
+            d = np.maximum(dx, dy)  # Chebyshev distance
+            dist_min = np.minimum(dist_min, d)
+
+        return dist_min
+
+    @staticmethod
+    def wavefront_radius_from_state(state, dist_to_seed, q=0.95):
+        """
+        Given a state (N,) and precomputed dist_to_seed (N,), return a scalar
+        front radius based on the q-quantile of distances of infected nodes.
+        """
+        infected = (state == 1)
+        if not np.any(infected):
+            return np.nan
+        return float(np.quantile(dist_to_seed[infected], q))
+
+    @staticmethod
+    def measure_wave_speed(
+        A, L, beta, gamma, omega,
+        I0=5, T=300, seed=0,
+        is_sirs=False,
+        q=0.95,
+        fit_tmin=5,
+        fit_tmax=60,
+        min_I=5
+    ):
+        """
+        Estimate wave speed (cells per timestep) by tracking wavefront radius
+        vs time and fitting a line over [fit_tmin, fit_tmax].
+
+        q: quantile used to define the wavefront radius (0.9-0.99 typical).
+        min_I: ignore timesteps where I < min_I (front poorly defined).
+        """
+        rng = np.random.default_rng(seed)
+        N = L * L
+        if A.shape != (N, N):
+            raise ValueError(f"A must be shape ({N},{N}) for L={L}")
+
+        # init
+        state = np.zeros(N, dtype=np.int8)
+        init = rng.choice(N, size=min(I0, N), replace=False)
+        state[init] = 1
+
+        # distances to initial seeds (in lattice metric, not graph metric)
+        dist_to_seed = Networks._torus_chebyshev_dist_to_seeds(L, init)
+
+        t = np.arange(T + 1)
+        radius = np.full(T + 1, np.nan, dtype=float)
+        I_counts = np.zeros(T + 1, dtype=int)
+
+        # t=0
+        I_counts[0] = int(np.sum(state == 1))
+        if I_counts[0] >= min_I:
+            radius[0] = Networks.wavefront_radius_from_state(state, dist_to_seed, q=q)
+
+        # evolve + measure
+        for step in range(1, T + 1):
+            state = Networks.sirs_step(A, state, beta, gamma, omega, rng, is_sirs=is_sirs)
+            I_counts[step] = int(np.sum(state == 1))
+            if I_counts[step] >= min_I:
+                radius[step] = Networks.wavefront_radius_from_state(state, dist_to_seed, q=q)
+
+        # fit speed on chosen window, using only finite radii
+        mask = (t >= fit_tmin) & (t <= fit_tmax) & np.isfinite(radius)
+        if np.sum(mask) < 2:
+            return np.nan, t, radius, I_counts
+
+        # linear fit: radius ≈ v*t + c
+        v, c = np.polyfit(t[mask], radius[mask], 1)
+
+        return float(v), t, radius, I_counts
+
+
+def run_fft_over_seeds(p, n_seeds=2):
     fft_vals = []
 
     for seed in range(n_seeds):
-        A = Networks.small_world_2d_torus_k8(L=200, p=p, seed=seed)
+        A = Networks.small_world_2d_torus_k8(L=400, p=p, seed=seed)
 
-        t, S, I, R, _ = Networks.run_sirs(
+        t, S, I, R, _, _, _ = Networks.run_sirs(
             A,
-            beta=0.06,
-            gamma=0.2,
+            beta=0.5/8,
+            gamma=0.14,
             omega=0.01,
             I0=10,
-            T=1000,
+            T=10000,
             seed=seed # Keep constant
         )
-
-        fft_vals.append(Networks.max_fft(I))
+        vals, pers =Networks.max_fft(I)
+        fft_vals.append(pers)
 
     return np.array(fft_vals)
 
 # p_vals = []
 # mean_fft_max = []
-# for i in range(0,9):
-#     p = i/10
+# for i in np.linspace(0,0.5,10):
+#     p = i
 #     p_vals.append(p)
-#     vals = run_fft_over_seeds(p=p)
-#     mean_fft_max.append(vals.mean())
+#     pers= run_fft_over_seeds(p=p)
+#     mean_fft_max.append(pers.mean())
 
 
-#     print("Mean FFT max :", vals.mean(),"p=", p)
+#     print("Mean FFT max :", pers.mean(),"p=", p)
 # plt.figure()
 # plt.plot(p_vals, mean_fft_max)
 # plt.xlabel("Mean number of")
@@ -606,11 +570,11 @@ def run_fft_over_seeds(p, n_seeds=10):
 # plt.tight_layout()
 # plt.show()
 # A = Networks.small_world_2d_truncnorm_local(L=200, r=2, k_mean=8, k_sd=0, seed=2)
-A = Networks.small_world_2d_torus_k8(L=200, p=1, seed=1)
+# A = Networks.small_world_2d_torus_k8(L=200, p=1, seed=1)
 
 
 
-# Networks.animate_sirs_grid(A, L=200, beta=0.06, gamma=0.2, omega=0.01, I0=10, T=400, seed=20)
-t, S, I, R, final_state = Networks.run_sirs(A, beta=0.4/8, gamma=0.14, omega=0.01, I0=10, T=500, seed=20)
-Networks.plot_sirs_time_series(t, S, I, R)
-Networks.plot_fft(I)
+# # Networks.animate_sirs_grid(A, L=200, beta=0.06, gamma=0.2, omega=0.01, I0=10, T=400, seed=20)
+# t, S, I, R, final_state = Networks.run_sirs(A, beta=0.4/8, gamma=0.14, omega=0.01, I0=10, T=500, seed=20)
+# Networks.plot_sirs_time_series(t, S, I, R)
+# Networks.plot_fft(I)

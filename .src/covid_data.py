@@ -82,27 +82,47 @@ class CovidData:
         out = out.sort_values("mid_date").reset_index(drop=True)
         self.df = out
         return out
-    def estimate_beta(
+    
+
+    def estimate_beta_per_step(
         self,
-        start,
-        end,
         gamma,
-            ):
-        df = self.data if self.df is None else self.df
+        dt=7.0,
+    ):
+        """
+        Estimate R_eff(t) and beta(t) using
+            beta = d/dt ln I + gamma
 
-        start = pd.to_datetime(start)
-        end = pd.to_datetime(end)
+        Parameters
+        ----------
+        gamma : float
+            Recovery rate (e.g. 1/7 per day)
+        dt : float
+            Time step between data points (in days)
 
-        win = df[(df["mid_date"] >= start) & (df["mid_date"] <= end)]
-        win = win[win["infected"] > 0].sort_values("mid_date")
+        Returns
+        -------
+        R_eff : np.ndarray
+            Effective reproduction number at each timestep
+        beta : np.ndarray
+            Effective transmission rate at each timestep
+        """
+        I = np.asarray(self.data['infected'], dtype=float)
 
-        t = (win["mid_date"] - win["mid_date"].iloc[0]).dt.days.to_numpy()
-        I = win["infected"].to_numpy()
+        n = len(I)
+        R_eff = np.full(n - 1, np.nan)
+        beta = np.full(n - 1, np.nan)
 
-        r, _ = np.polyfit(t, np.log(I), 1)
+        for t in range(n - 1):
+            if I[t] <= 0 or I[t + 1] <= 0:
+                continue
 
-        beta = r + gamma
-        return beta
+            dlogI_dt = (np.log(I[t + 1]) - np.log(I[t])) / dt
+            beta[t] = dlogI_dt + gamma
+            R_eff[t] = beta[t] / gamma
+
+        return R_eff, beta
+
     
     def plot(self, use_dates: bool = True) -> None:
         """
@@ -131,10 +151,4 @@ class CovidData:
 #TODO:
 # 1. Look at cutoff of regulations -> oscillations.
 # 2. match to network/SIRS.
-CovidData(sheet_name='1a').plot()
-beta = CovidData().estimate_beta(
-    start="2021-11-30",
-    end="2021-12-29",
-    gamma=1/5,
-)
-print(beta)
+
