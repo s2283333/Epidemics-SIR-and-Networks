@@ -1,6 +1,7 @@
 """
 Generates a class containing the relevant covid data in a pd.dataframe and a plotting function.
 CovidData().data is the dataframe. CovidData().plot() does the plotting.
+This is not used in the final report, however is once more kept.
 """
 import re
 from dataclasses import dataclass
@@ -147,8 +148,4 @@ class CovidData:
         plt.legend()
         plt.tight_layout()
         plt.show()
-
-#TODO:
-# 1. Look at cutoff of regulations -> oscillations.
-# 2. match to network/SIRS.
 

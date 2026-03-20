@@ -1,3 +1,17 @@
+"""
+standard_SIR:
+This file is not used however was maintained in the github.
+It sets up a two strain stochastic SIR(S) model.
+This was mainly done in an alternate exploratory route into how two strains compete.
+Only ~10% of people ever got the initial strain of COVID. One pertinent theory for this was
+that the second disease "took over" as it was more infectious.
+This code enables one to explore different disease parameters across the two strains.
+Although none of this is used in the report it does provide interesting results that 
+both strains will infect a very high proportion of the population regardless of the presence 
+of another disease. 
+We also allow an movement form R1 -> I2 directly effectively implying recovery from strain 1
+does not provide immunity to strain 2. 
+"""
 from matplotlib.pylab import False_
 import numpy as np
 import matplotlib.pyplot as plt
@@ -232,108 +246,5 @@ class TwoStrainSIRSAsym:
 
         cum_total = float(np.sum(self.new1[:k_ext + 1]) + np.sum(self.new2[:k_ext + 1]))
         return cum_total / float(self.N)
-
-
-#TODO
-# 1. Find what makes 2 take over. Whats needed for a disease to take off.
-# 1. Look at fitting covid data to find best params.
-# 2. More fluid approach rather than just two variants.
-# 3. Less rigid movement structure (eg. R1-> I2 feels slightly cheaty).
-# 4. Alter plotting potentially (bit crammed).
-# --- add this below your class definition (or in a new cell) ---
-
-def compare_beta2_infections(
-        beta2_values,
-        *,
-        # keep everything else fixed here
-        N=1_000_000,
-        I10=100,
-        I20=20,
-        beta1=0.4,
-        gamma1=1/7,
-        gamma2=1/7,
-        omega1=0,
-        omega2=0,
-        t_seed=15,
-        t_max=500,
-        dt=0.1,
-        R10=0.0,
-        R20=0.0,
-        is_R1_to_I2=False
-        ):
-    """
-    Sweep over beta2 values and plot ONLY infections (I1 and I2).
-    """
-    plt.figure(figsize=(10, 5))
-
-    for b2 in beta2_values:
-        model = TwoStrainSIRSAsym(
-            N=N, I10=I10, I20=I20,
-            beta1=beta1, beta2=b2,
-            gamma1=gamma1, gamma2=gamma2,
-            omega1=omega1, omega2=omega2,
-            t_seed=t_seed, t_max=t_max, dt=dt,
-            R10=R10, R20=R20,
-            is_R1_to_I2=is_R1_to_I2
-        )
-        t, S, I1, I2, R1, R2 = model.run()
-
-        # plot only infections
-        plt.plot(t, I1, linestyle="--", linewidth=1.8, label=f"I1 (beta2={b2:g})")
-        plt.plot(t, I2, linestyle="-",  linewidth=2.2, label=f"I2 (beta2={b2:g})")
-
-    plt.axvline(t_seed, linestyle=":", linewidth=1.2)
-    plt.xlabel("time (days)")
-    plt.ylabel("people infected")
-    if is_R1_to_I2:
-        plt.title("Infections only: effect of varying beta2 (inter disease connection)")
-    else:
-        plt.title("Infections only: effect of varying beta2")
-    plt.legend(ncol=2)
-    plt.tight_layout()
-    plt.show()
-
-
-# Example usage:
-def sweep_beta2_threshold(
-    beta2_min=0.5,
-    beta2_max=0.90,
-    n_points=15,
-    interventions=None,
-    plot=True,
-):
-    betas = np.linspace(beta2_min, beta2_max, n_points)
-    infections = []
-
-    for beta2 in betas:
-        m = TwoStrainSIRSAsym(
-            N=1_000_000,
-            I10=100,
-            I20=20,
-            beta1=0.4,
-            beta2=beta2,
-            gamma1=1/5,
-            gamma2=1/5,
-            omega1=0,
-            omega2=0,
-            t_seed=70,
-            t_max=500,
-            dt=0.1,
-            R10=0.0,
-            R20=0.0,
-            is_R1_to_I2=False,
-            interventions=interventions,
-        )
-
-        m.run()
-        infections.append(m.i1_near_extinction_fraction())
-
-    if plot:
-        plt.plot(betas, infections)
-        plt.xlabel("beta2")
-        plt.ylabel("infection % to kill strain 1")
-        plt.show()
-
-    return betas, infections
 
 

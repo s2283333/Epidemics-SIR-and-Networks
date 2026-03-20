@@ -1,441 +1,422 @@
+"""
+Main script demonstrating example usage of the report's core components. Combines the
+Networks class and helper_functions module to expose all required functionality.
+
+Sections
+
+Visuals:
+    Generates snapshot animations and time series plots for small-world networks at
+    varying rewiring probabilities (p = 0.00, 0.01, 0.05) to illustrate how rewiring
+    affects epidemic spread across the grid.
+
+Epidemic Threshold:
+    Sweeps over rewiring probabilities and transmission rates to estimate the critical
+    threshold alpha_c (and corresponding R0_c) at which an epidemic takes hold. Run
+    across multiple network realisations and seeds, then fitted with exponential and
+    logarithmic models. Residuals are plotted for both fits. A reduced dataset focused
+    on small p values is also analysed separately. This takes a particularly long time to run.
+
+Peak Statistics:
+    Collects the peak infection percentage and time of peak infection as a function of
+    rewiring probability, for grid sizes L = 200, 300, and 400.
+
+Ever Infected (Cumulative):
+    Plots the cumulative fraction of the population ever infected over time, for two
+    different transmission rates at L = 200.
+
+Endemic Oscillations:
+    Uses FFT analysis across multiple seeds to estimate the dominant oscillation period
+    of endemic infection cycles as a function of rewiring probability.
+
+Appendix — Hub-Driven Infections:
+    Tracks long-range (hub-driven) infections over time using a branching process, and
+    compares the percentage of the population infected across different rewiring
+    probabilities. Also plots new and cumulative hub infections side by side.
+
+Appendix — Secondary Infections:
+    Sweeps over rewiring probabilities to measure the fraction of infections attributable
+    to secondary (long-range) transmission events.
+
+Note: Code was not always executed exactly as shown — in practice, many sections were run
+in smaller, isolated steps to avoid triggering large, computationally expensive simulations
+in a single pass.
+"""
+
 from matplotlib import pyplot as plt
 import numpy as np
-from basic_networks import Networks, run_fft_over_seeds
-from standard_SIR import TwoStrainSIRSAsym, sweep_beta2_threshold
-from covid_data import CovidData
-from scipy.optimize import curve_fit
+from basic_networks import Networks
+from helper_functions import compute_thresholds, collect_peak_stats, cumulative_infection_plot, run_fft_over_seeds, sweep_secondary_fraction, fit_models
 
-
-import numpy as np
-
-def frac_connections_nonlocal(A, L):
-    """
-    Returns fraction of directed connections (stubs) that are nonlocal
-    relative to Moore neighbourhood on an LxL torus.
-
-    If this returns 0.23 -> interpret as "23% of people's connections are rewired".
-    """
-    A = A.tocsr()
-    N = L * L
-    if A.shape != (N, N):
-        raise ValueError("A shape doesn't match L*L")
-
-    I, J = A.nonzero()  # directed edges (i->j)
-    xi, yi = np.divmod(I, L)
-    xj, yj = np.divmod(J, L)
-
-    dx = xj - xi
-    dy = yj - yi
-
-    # wrap to shortest displacement on torus
-    dx = np.where(dx >  L/2, dx - L, dx)
-    dx = np.where(dx < -L/2, dx + L, dx)
-    dy = np.where(dy >  L/2, dy - L, dy)
-    dy = np.where(dy < -L/2, dy + L, dy)
-
-    local = (np.abs(dx) <= 1) & (np.abs(dy) <= 1) & ~((dx == 0) & (dy == 0))
-
-    # fraction of stubs that are nonlocal
-    return 1.0 - local.mean()
+plt.rcParams.update({
+    "font.size": 14,          # base font size
+    "axes.titlesize": 18,     # title size
+    "axes.labelsize": 16,     # axis labels
+    "xtick.labelsize": 14,    # x tick labels
+    "ytick.labelsize": 14,    # y tick labels
+    "legend.fontsize": 14,    # legend
+    "figure.titlesize": 18    # figure title
+})
 
 def main():
-
-    # Covid Data
-    CovidData(sheet_name='1a').plot()
-
-    R_eff, beta = CovidData().estimate_beta_per_step(
-        gamma=1/7,
-        dt=7.0,      # weekly data
-    )
-    print(beta)
-    #SIRS
-    # Uses 40,000 people to compare to network, ignoring I2 for now
-    m = TwoStrainSIRSAsym(
-        N=40_000,
-        I10=10,
-        I20=0,
-        beta1=0.4,
-        beta2=0, # <-- set this
-        gamma1=0.14,
-        gamma2=1/5,
-        omega1=1/100,
-        omega2=0,
-        t_seed=70,
-        t_max=10000,
-        dt=0.1,
-        R10=0.0,
-        R20=0.0,
-        is_R1_to_I2=False,
-        interventions=[]
-        )
+    # These are consistent throughout
+    gamma = 0.14
+    omega = 0.01
     
-    t, S, I1, I2, R1, R2 = m.run()
-    m.plot()
-    Networks.plot_fft(I1)
-    # SIRS
+    
+    # Visuals
+    A = Networks.small_world_2d_torus_k8(L=400,p=0.00, seed=0)
+    t, S, I, R, _, _, final_state = Networks.run_sirs(A, alpha=0.6/8, gamma=gamma, omega=omega, I0=5, T=1000, seed=0)
+    anim = Networks.snapshot_sirs_grid(A,400, 0.6/8,0.14,0.01, t_freeze=250, seed=0, I0=5,p=0)
+    Networks.plot_sirs_time_series(t, S, I, R,L=400, vline=250)
 
-    # Networks
-
-    A = Networks.small_world_2d_torus_k8(L=200, p=1, seed=1)
+    A = Networks.small_world_2d_torus_k8(L=400, p=0.01, seed=0)
 
 
 
-    Networks.animate_sirs_grid(A, L=200, beta=0.06, gamma=0.2, omega=0.01, I0=10, T=400, seed=20)
-    t, S, I, R, _, _, final_state = Networks.run_sirs(A, beta=0.4/8, gamma=0.14, omega=0.01, I0=10, T=10000, seed=20)
-    Networks.plot_sirs_time_series(t, S, I, R, L=200)
-    Networks.plot_fft(I)
+    t, S, I, R, _, _, final_state = Networks.run_sirs(A, alpha=0.6/8, gamma=gamma, omega=omega, I0=5, T=1000, seed=0)
+    anim = Networks.snapshot_sirs_grid(A,400, 0.6/8,0.14,0.01, t_freeze=80, seed=0, I0=5,p=0.01)
+    Networks.plot_sirs_time_series(t, S, I, R,L=400, vline=80)
 
-    max_Is = []
-    ps = np.linspace(0, 0.2, 15)
+    A = Networks.small_world_2d_torus_k8(L=400, p=0.05, seed=0)
 
-    for p in ps:
-        A = Networks.small_world_2d_torus_k8(L=200, p=p, seed=1)
-        t, S, I, R, new_inf, ever_mask, final_state = Networks.run_sirs(
-            A,
-            beta=0.4/8,
-            gamma=0.14,
-            omega=0.02,
-            I0=10,
-            T=10000,
-            seed=20,
-            is_sirs=False
-        )
+    t, S, I, R, _, _, final_state = Networks.run_sirs(A, alpha=0.6/8, gamma=0.14, omega=0.01, I0=5, T=1000, seed=0)
+    anim = Networks.snapshot_sirs_grid(A,400, 0.6/8,0.14,0.01, t_freeze=50, seed=0, I0=5,p=0.05)
+    Networks.plot_sirs_time_series(t, S, I, R,L=400, vline=50)
+    
 
-        N = A.shape[0]
-        peak_pct = 100 * np.max(I) / N
-        max_Is.append(peak_pct)
+    # EPIDEMIC THRESHOLD
+    # -------------------
+    # Below is a theoretical way to do the entire datasets in one go. However this will take a
+    # very long time to run so in practice ths was done by splitting the data into mini sets and
+    # doing bit by bit. This still took over 10 hours to run on my device
+    # FULL DATASET
+    # One point at every 0.05
+    ps = np.linspace(0.0, 1.0, 21)
+    alphas = np.linspace(0.02, 0.05, 50)
+    n_networks = 20
+    n_seeds = 50
 
-    plt.plot(ps, max_Is)
-    plt.xlabel("rewiring probability p")
-    plt.ylabel("peak % infected")
-    plt.title("Peak fraction infected vs rewiring probability")
+    all_alpha_cs = np.full((n_networks, len(ps)), np.nan)
+    all_R0_cs = np.full((n_networks, len(ps)), np.nan)
+
+    for i in range(n_networks):
+        print(f"\nNetwork realisation {i+1}/{n_networks}")
+
+        # set the network seed inside your function however you want
+        alpha_c_vals, R0_c_vals = compute_thresholds(ps, alphas, n_seeds)
+
+        all_alpha_cs[i, :] = alpha_c_vals
+        all_R0_cs[i, :] = R0_c_vals
+
+    # Mean across network realisations
+    alpha_c_mean = np.nanmean(all_alpha_cs, axis=0)
+    R0_c_mean = np.nanmean(all_R0_cs, axis=0)
+
+    # Standard error across network realisations
+    alpha_c_err = np.nanstd(all_alpha_cs, axis=0, ddof=1) / np.sqrt(n_networks)
+    R0_c_err = np.nanstd(all_R0_cs, axis=0, ddof=1) / np.sqrt(n_networks)
+    
+    
+    fig, ax1 = plt.subplots()
+
+    ax1.errorbar(
+        ps,
+        alpha_c_mean,
+        yerr=alpha_c_err,
+        fmt='o',
+        markersize=4,
+        capsize=3
+    )
+
+    ax1.set_title('Epidemic Threshold as a Function of Rewiring Probability')
+    ax1.set_xlabel('Rewiring Probability $p$')
+    ax1.set_ylabel(r'Threshold $\alpha$')
+
+    ax2 = ax1.twinx()
+    ax2.set_ylim(np.array(ax1.get_ylim()) * 8 / gamma)
+    ax2.set_ylabel(r'Threshold $R_0$')
+
     plt.show()
     
-    # looking at how many required to be infected for I1 to die (no interventions)
-    sweep_beta2_threshold()
+    R0_se = R0_c_std/np.sqrt(20)
+    _, _, chi1, chi2,_ , res_exp, log_res = fit_models(ps, R0_c_mean, R0_se, is_small_dataset=False)
+    
+    # Exponential residuals
+    plt.figure()
+    plt.errorbar(
+        ps,
+        res_exp,
+        yerr=R0_se,
+        fmt='o',
+        markersize=4,
+        capsize=3
+    )
+    plt.axhline(0, color='black', linewidth=1)
+    plt.xlabel('Rewiring probability $p$')
+    plt.ylabel('Residuals')
+    plt.title(r'Residuals of Exponential Fit Across All $p$')
+    plt.show()
 
-    # Interventions
-    sweep_beta2_threshold(interventions=[(10,30,0.2,0.2),(50,60,0.2,0.2)])
+    # Logarithmic residuals
+    mask_log = ps > 0
 
+    plt.figure()
+    plt.errorbar(
+        ps[mask_log],
+        log_res,
+        yerr=R0_se[mask_log],
+        fmt='o',
+        markersize=4,
+        capsize=3
+    )
+    plt.axhline(0, color='black', linewidth=1)
+    plt.xlabel(r'Rewiring Probability $p$')
+    plt.ylabel('Residuals')
+    plt.title(r'Residuals of Logarithmic Fit Across All $p$')
+    plt.show()
+    
+    
+    # REDUCED DATASET
+    ps = np.linspace(0.0, 0.05, 10) 
+    
+    R0_c_mean, R0_c_std, alpha_c_mean, alpha_c_std = compute_thresholds(ps)
+    
+    _, _, chi1_reduced_dataset, chi2_reduced_dataset,_ , res_exp, log_res = fit_models(ps, R0_c_mean, R0_c_std/np.sqrt(20), is_small_dataset=True)
+    
+    
 
-if __name__ == "__main__":
-    main()
+    # PEAK STATISTICS
+    
+    Ls = [200, 300, 400]
+    ps = np.linspace(0, 0.05, 10)
 
-ps = np.linspace(0.0, 1.0, 50)
-betas = np.linspace(0.017, 0.05, 30)
+    results, errors, peak_times, peak_time_errors = collect_peak_stats(Ls, ps)
+    plt.figure()
+    for L in Ls:
+        plt.errorbar(
+            ps,
+            results[L],
+            yerr=errors[L],
+            fmt='o-',
+            markersize=4,
+            capsize=3,
+            label=f'L={L}'
+        )
+    plt.xlabel(r'Rewiring Probability $p$')
+    plt.ylabel('Peak Percentage of Population Infected')
+    plt.title('Peak Percentage Infected as a Function of Rewiring Probability')
+    plt.legend()
+    plt.show()
 
-beta_thresholds = []
-last_deads = []
-first_alives = []
+    plt.figure()
+    for L in Ls:
+        plt.errorbar(
+            ps,
+            peak_times[L],
+            yerr=peak_time_errors[L],
+            fmt='o-',
+            markersize=4,
+            capsize=3,
+            label=f'L={L}'
+        )
+    plt.xlabel(r'Rewiring Probability $p$')
+    plt.ylabel('Time of Peak Infection')
+    plt.title('Time of Peak Infection as a Function of Rewiring Probability')
+    plt.legend()
+    plt.show()
+    
+    
+    # EVER INFECTED
+    
+    cumulative_infection_plot(L=200, alpha=0.5/8)
+    
+    cumulative_infection_plot(L=200, alpha=0.05)
+    
+    
+    # ENDEMIC
+    
+    ps = np.linspace(0, 0.05, 10)
 
-for i, p in enumerate(ps):
-    print(f"\n---- p = {p:.3f}  ({i+1}/{len(ps)}) ----")
+    mean_periods = []
+    se_periods = []
 
-    A = Networks.small_world_2d_torus_k8(L=200, p=p, seed=1)
+    for p in ps:
+        fft_vals = run_fft_over_seeds(p, n_seeds=10)
+        mean_periods.append(np.mean(fft_vals))
+        se_periods.append(np.std(fft_vals, ddof=1) / np.sqrt(len(fft_vals)))
 
-    last_dead = None
-    first_alive = None
+    mean_periods = np.array(mean_periods)
+    se_periods = np.array(se_periods)
 
-    for j, beta in enumerate(betas):
-        print(f"   beta {j+1}/{len(betas)} = {beta:.5f}", end="\r")
+    plt.figure()
+    plt.errorbar(
+        ps,
+        mean_periods,
+        yerr=se_periods,
+        fmt='o-',
+        markersize=4,
+        capsize=3
+    )
+    plt.xlabel(r'Rewiring Probability $p$')
+    plt.ylabel('Mean Oscillation Period (days)')
+    plt.title('Oscillation Period as a Function of Rewiring Probability')
+    plt.show()
+    ps = [0.0, 0.01, 0.05]
+    L = 200
 
-        t, S, I, R, _, _, _ = Networks.run_sirs(
+    fig, axes = plt.subplots(3, 1, figsize=(8,6), sharex=True)
+
+    for i, p in enumerate(ps):
+
+        A = Networks.small_world_2d_torus_k8(L=L, p=p, seed=1)
+
+        t, S, I, R, new_inf, ever_mask, final_state = Networks.run_sirs(
             A,
-            beta=beta,
+            alpha=0.5/8,
             gamma=0.14,
             omega=0.01,
             I0=10,
-            T=3000,
-            seed=0,
+            T=1500,
+            seed=200,
             is_sirs=True
         )
 
-        if I[2000] == 0:
-            last_dead = beta
-        else:
-            first_alive = beta
-            break
+        N = A.shape[0]
+        I_frac = I / N
 
-    if last_dead is not None and first_alive is not None:
-        beta_c = 0.5 * (last_dead + first_alive)
-        print(f"   → beta_c ≈ {beta_c:.6f}")
-    else:
-        beta_c = np.nan
-        print("   → threshold not bracketed")
+        axes[i].plot(t, I_frac, color="black", lw=1.5)
 
-    beta_thresholds.append(beta_c)
-    last_deads.append(last_dead)
-    first_alives.append(first_alive)
+        axes[i].text(
+            0.95, 0.9,
+            f"$p = {p}$",
+            transform=axes[i].transAxes,
+            ha="right",
+            va="top"
+        )
 
-# convert to arrays for later use
-ps = np.array(ps)
-beta_thresholds = np.array(beta_thresholds)
-beta_c_mean = beta_thresholds
-beta_c_std  = np.full_like(beta_c_mean, 1e-6)  # tiny weights to avoid divide-by-zero
+        axes[i].set_ylabel(r"$I_{inf}(t)$")
 
-# --- p=0 value (force fit through first point) ---
-i0 = np.argmin(np.abs(ps - 0.0))
-beta0 = float(beta_c_mean[i0])
+    axes[-1].set_xlabel("Time (days)")
 
-# --- fit data excluding p=0 (since it's enforced) ---
-mask = np.isfinite(beta_c_mean) & (ps > 0)
-x = ps[mask]
-y = beta_c_mean[mask]
-s = beta_c_std[mask]
-
-def f_forced(p, b_inf, p0, a):
-    return b_inf + (beta0 - b_inf) * np.exp(- (p / p0)**a)
-
-# initial guesses
-b_inf_guess = np.nanmedian(y[x > 0.6])
-p0_guess = 0.05
-a_guess = 0.7
-
-popt, pcov = curve_fit(
-    f_forced, x, y,
-    p0=[b_inf_guess, p0_guess, a_guess],
-    sigma=s,
-    absolute_sigma=True,
-    bounds=([0.0, 1e-6, 0.05], [1.0, 5.0, 5.0]),
-    maxfev=20000
-)
-
-b_inf, p0, a = popt
-print("Fit params:", "beta0=", beta0, "b_inf=", b_inf, "p0=", p0, "a=", a)
-last_deads = np.array(last_deads)
-first_alives = np.array(first_alives)
-
-# target
-R0_target = 2.6
-gamma = 0.14
-k_mean = 8.0
-
-# convert to alpha target
-alpha_target = R0_target * gamma / k_mean
-print("alpha_target =", alpha_target)
-
-# solve b_inf + (beta0-b_inf)*exp(-(p/p0)^a) = alpha_target
-ratio = (alpha_target - b_inf) / (beta0 - b_inf)
-print("ratio =", ratio)
-
-if not (0 < ratio < 1):
-    print("No real solution: target is outside the fitted curve range.")
-else:
-    p_at_R0 = p0 * (-np.log(ratio))**(1.0 / a)
-    print("p where R0=2.6 (from smooth fit) =", p_at_R0)
-
-    # quick sanity check
-    alpha_check = b_inf + (beta0 - b_inf) * np.exp(- (p_at_R0 / p0)**a)
-    R0_check = alpha_check * k_mean / gamma
-    print("check R0 =", R0_check)
-    
-A = Networks.small_world_2d_torus_k8(L=400, p=0, seed=0)
-
-
-
-t, S, I, R, _, _, final_state = Networks.run_sirs(A, beta=0.6/8, gamma=0.14, omega=0.01, I0=5, T=1000, seed=0)
-anim = Networks.snapshot_sirs_grid(A,400, 0.6/8,0.14,0.01, t_freeze=250, seed=0, I0=5)
-Networks.plot_sirs_time_series(t, S, I, R,L=400, vline=250)
-
-A = Networks.small_world_2d_torus_k8(L=400, p=0.01, seed=0)
-
-
-
-t, S, I, R, _, _, final_state = Networks.run_sirs(A, beta=0.6/8, gamma=0.14, omega=0.01, I0=5, T=1000, seed=0)
-anim = Networks.snapshot_sirs_grid(A,400, 0.6/8,0.14,0.01, t_freeze=250, seed=0, I0=5)
-Networks.plot_sirs_time_series(t, S, I, R,L=400, vline=250)
-
-A = Networks.small_world_2d_torus_k8(L=400, p=0.02, seed=0)
-
-
-
-t, S, I, R, _, _, final_state = Networks.run_sirs(A, beta=0.6/8, gamma=0.14, omega=0.01, I0=5, T=1000, seed=0)
-anim = Networks.snapshot_sirs_grid(A,400, 0.6/8,0.14,0.01, t_freeze=250, seed=0, I0=5)
-Networks.plot_sirs_time_series(t, S, I, R,L=400, vline=250)
-
-
-
-def count_hubs_before_peak(A, L, beta, gamma, omega, I0=10, T=10000, seed=0):
-    """
-    "Hub created" (as before): a new infection at time t that has NO infected
-    neighbour among its 8 LOCAL grid neighbours at time t-1 (i.e. seeded via a shortcut).
-
-    Returns:
-        hubs_before_peak : int
-        t_peak           : int
-        I_series         : (T+1,) int array
-    """
-    rng = np.random.default_rng(seed)
-    N = L * L
-
-    # --- local 8-neighbour list (torus) ---
-    local_nbrs = [[] for _ in range(N)]
-    for x in range(L):
-        for y in range(L):
-            i = x * L + y
-            for dx in (-1, 0, 1):
-                for dy in (-1, 0, 1):
-                    if dx == 0 and dy == 0:
-                        continue
-                    xx = (x + dx) % L
-                    yy = (y + dy) % L
-                    local_nbrs[i].append(xx * L + yy)
-
-    # --- init state: 0=S, 1=I, 2=R ---
-    state = np.zeros(N, dtype=np.int8)
-    init = rng.choice(N, size=min(I0, N), replace=False)
-    state[init] = 1
-
-    I_series = np.zeros(T + 1, dtype=int)
-    I_series[0] = np.sum(state == 1)
-
-    hubs_per_t = np.zeros(T + 1, dtype=int)
-
-    for t in range(1, T + 1):
-        prev_state = state.copy()
-
-        infected_prev = (prev_state == 1)
-        susceptible_prev = (prev_state == 0)
-        recovered_prev = (prev_state == 2)
-
-        # k_inf for each node (number of infected neighbours in A)
-        k_inf = A.dot(infected_prev.astype(int))
-
-        # S -> I with prob 1 - (1-beta)^k_inf
-        p_inf = 1.0 - np.power(1.0 - beta, k_inf)
-        new_inf = susceptible_prev & (rng.random(N) < p_inf)
-
-        # I -> R with prob gamma
-        new_rec = infected_prev & (rng.random(N) < gamma)
-
-        # R -> S with prob omega
-        new_sus = recovered_prev & (rng.random(N) < omega)
-
-        # apply updates (sync)
-        state[new_inf] = 1
-        state[new_rec] = 2
-        state[new_sus] = 0
-
-        I_series[t] = np.sum(state == 1)
-
-        # count "hubs created" at this t: new infection with zero LOCAL infected neighbours at t-1
-        if np.any(new_inf):
-            idx = np.flatnonzero(new_inf)
-            c = 0
-            for i in idx:
-                # any local neighbour infected at t-1?
-                if not np.any(infected_prev[local_nbrs[i]]):
-                    c += 1
-            hubs_per_t[t] = c
-
-    t_peak = int(np.argmax(I_series))
-    hubs_before_peak = int(np.sum(hubs_per_t[:t_peak]))  # strictly before peak time
-
-    return hubs_before_peak, t_peak, I_series
-
-
-# example usage:
-# A = Networks.small_world_2d_torus_k8(L=400, p=0.03, seed=11)
-# hubs, tpk, I = count_hubs_before_peak(A, L=400, beta=0.4/8, gamma=0.14, omega=0.02, I0=10, T=10000, seed=20)
-# print("hubs_before_peak =", hubs, "t_peak =", tpk)
-
-
-def plot_cum_hubs_vs_t_over_p(L, beta, gamma, omega,
-                             I0=10, T=500,
-                             ps=None, n_seeds=10,
-                             base_seed=0):
-    """
-    For each p in ps:
-      - run n_seeds simulations (seed = base_seed + s)
-      - compute cumulative "hubs created" curve H(t)=sum_{u<=t} hubs_per_u
-      - plot mean H(t) with +/- standard error band
-
-    "Hub created" definition (as before):
-      new infection at time t with NO infected neighbour among its 8 LOCAL grid neighbours at time t-1.
-    """
-    if ps is None:
-        ps = np.linspace(0.0, 0.1, 10)
-
-    N = L * L
-
-    # --- local 8-neighbour list (torus) ---
-    local_nbrs = [[] for _ in range(N)]
-    for x in range(L):
-        for y in range(L):
-            i = x * L + y
-            for dx in (-1, 0, 1):
-                for dy in (-1, 0, 1):
-                    if dx == 0 and dy == 0:
-                        continue
-                    xx = (x + dx) % L
-                    yy = (y + dy) % L
-                    local_nbrs[i].append(xx * L + yy)
-
-    def cum_hubs_curve_for_seed(A, seed):
-        rng = np.random.default_rng(seed)
-
-        state = np.zeros(N, dtype=np.int8)  # 0=S,1=I,2=R
-        init = rng.choice(N, size=min(I0, N), replace=False)
-        state[init] = 1
-
-        hubs_per_t = np.zeros(T + 1, dtype=float)
-        # hubs_per_t[0]=0
-
-        for t in range(1, T + 1):
-            prev_state = state.copy()
-
-            infected_prev = (prev_state == 1)
-            susceptible_prev = (prev_state == 0)
-            recovered_prev = (prev_state == 2)
-
-            # infections
-            k_inf = A.dot(infected_prev.astype(int))
-            p_inf = 1.0 - np.power(1.0 - beta, k_inf)
-            new_inf = susceptible_prev & (rng.random(N) < p_inf)
-
-            # count hubs at this t (based on prev infected among LOCAL neighbours)
-            if np.any(new_inf):
-                idx = np.flatnonzero(new_inf)
-                c = 0
-                for i in idx:
-                    if not np.any(infected_prev[local_nbrs[i]]):
-                        c += 1
-                hubs_per_t[t] = c
-
-            # recover / wane
-            new_rec = infected_prev & (rng.random(N) < gamma)
-            new_sus = recovered_prev & (rng.random(N) < omega)
-
-            # apply updates
-            state[new_inf] = 1
-            state[new_rec] = 2
-            state[new_sus] = 0
-
-        return np.cumsum(hubs_per_t)  # (T+1,)
-
-    # --- plotting ---
-    fig, ax = plt.subplots(figsize=(8, 5))
-    t = np.arange(T + 1)
-
-    for p in ps:
-        curves = np.zeros((n_seeds, T + 1), dtype=float)
-
-        for s in range(n_seeds):
-            seed = base_seed + s
-
-            A = Networks.small_world_2d_torus_k8(L=L, p=float(p), seed=seed)
-            curves[s] = cum_hubs_curve_for_seed(A, seed=seed)
-
-        mean = curves.mean(axis=0)
-        se = curves.std(axis=0, ddof=1) / np.sqrt(n_seeds)
-
-        ax.plot(t, mean, label=f"p={p:.3f}")
-        ax.fill_between(t, mean - se, mean + se, alpha=0.2)
-
-    ax.set_xlabel("t")
-    ax.set_ylabel("Cumulative hubs created")
-    ax.set_title(f"Cumulative hubs vs time (T={T}), mean ± SE over {n_seeds} seeds")
-    ax.legend(ncol=2, fontsize=8)
-    ax.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.show()
+    
+    # APPENDIX MEASUREMENTS
+    
+    # Hubs
+    ps = [0.01, 0.02, 0.05]
+
+    L = 400
+    alpha = 0.5 / 8
+    gamma = 0.14
+    omega = 0.01
+    T = 1000
+    I0 = 10
+    seed = 0
+
+    # -----------------------------
+    # Plot 1: Hub-driven infections
+    # -----------------------------
+    plt.figure()
+
+    for p in ps:
+        A = Networks.small_world_2d_torus_k8(L=L, p=p, seed=seed)
+
+        hubs = Networks.run_branching(
+            A, L, alpha, gamma, omega,
+            I0=I0, T=T, seed=seed, is_sirs=False
+        )
+
+        plt.plot(np.arange(T + 1), hubs, label=f"p = {p}")
+
+    plt.xlabel("Time (Days)")
+    plt.ylabel("New Long-Range Infections Per Timestep")
+    plt.title("Hub-Driven Infections Over Time")
+    plt.legend()
+    plt.grid(False)
+
+    plt.show()
+
+
+    # -----------------------------
+    # Plot 2: % infected over time
+    # -----------------------------
+    plt.figure()
+
+    for p in ps:
+        A = Networks.small_world_2d_torus_k8(L=L, p=p, seed=seed)
+
+        t, S, I, R, _, _, _ = Networks.run_sirs(
+            A,
+            alpha=alpha,
+            gamma=gamma,
+            omega=omega,
+            I0=I0,
+            T=T,
+            seed=seed,
+            is_sirs=True
+        )
+
+        I_percent = 100 * I / (L * L)
+
+        plt.plot(t, I_percent, label=f"p = {p}")
+
+    plt.xlabel("Time (Days)")
+    plt.ylabel("Percentage of Population Infected")
+    plt.title("Percentage of Population Infected Over Time")
+    plt.legend()
+    plt.grid(False)
+
+    plt.show()
+    
+
+    # CUMULATIVE SEEDS (using ps and alpha etc from above)
+    
+    plt.figure(figsize=(8, 5))
+
+    for p in ps:
+        A = Networks.small_world_2d_torus_k8(L=L, p=p, seed=seed)
+
+        hubs = Networks.run_branching(
+            A, L, alpha, gamma, omega,
+            I0=I0, T=T, seed=seed, is_sirs=False
+        )
+
+        cumulative_hubs = np.cumsum(hubs)
+
+        plt.plot(
+            np.arange(T + 1),
+            hubs,
+            linestyle="--",
+            label=f"New hubs, p = {p}"
+        )
+        plt.plot(
+            np.arange(T + 1),
+            cumulative_hubs,
+            label=f"Cumulative hubs, p = {p}"
+        )
+
+    plt.xlabel("Time (Days)")
+    plt.ylabel("Number of Infections")
+    plt.title("New and Cumulative Long-Range Infections Over Time")
+    plt.legend()
+    plt.grid(False)
+    plt.show()
+    
+    # INFECTIONS FROM SECONDARY ONLY
+    
+    ps, mean_frac, std_frac = sweep_secondary_fraction(
+        L=200,
+        alpha=0.6/8,
+        gamma=0.14,
+        omega=0.01,
+        I0=5,
+        T=50,
+        n_p=15,
+        p_max=0.05,
+        n_runs=10,
+        is_sirs=False
+    )
+    
+if __name__ == "__main__":
+    main()
