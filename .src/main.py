@@ -44,8 +44,15 @@ in a single pass.
 
 from matplotlib import pyplot as plt
 import numpy as np
-from basic_networks import Networks
-from helper_functions import compute_thresholds, collect_peak_stats, cumulative_infection_plot, run_fft_over_seeds, sweep_secondary_fraction, fit_models
+from sirs_network_model import Networks
+from analysis_functions import (
+    compute_thresholds,
+    collect_peak_stats,
+    cumulative_infection_plot,
+    run_fft_over_seeds,
+    sweep_secondary_fraction,
+    fit_models
+)
 
 plt.rcParams.update({
     "font.size": 14,          # base font size

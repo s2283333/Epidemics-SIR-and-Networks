@@ -1,6 +1,6 @@
 from matplotlib import pyplot as plt
 import numpy as np
-from basic_networks import Networks
+from sirs_network_model import Networks
 from scipy.optimize import curve_fit
 
 
