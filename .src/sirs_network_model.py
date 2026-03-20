@@ -528,15 +528,10 @@ class Networks:
             Stage 2 — Secondary descendants: newly infected whose only infected
                     neighbours are already in the secondary lineage.
         Primary wins all ties (ambiguous nodes labelled 0).
+        
+        Returns the standard variables (as per run_sirs) alongside fraction from secondary
+        infections.
 
-        Returns
-        -------
-        t              : (T+1,) array
-        S, I, R        : (T+1,) counts
-        new_inf        : (T+1,) new infections per step
-        ever_inf_frac  : (T+1,) cumulative fraction ever infected
-        frac_secondary : (T+1,) fraction of ever-infected in the secondary lineage
-        state          : (N,) final state array
         """
         rng = np.random.default_rng(seed)
         N = A.shape[0]
