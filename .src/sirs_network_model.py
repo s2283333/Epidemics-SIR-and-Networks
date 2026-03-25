@@ -328,7 +328,6 @@ class Networks:
 
         # plot frozen state
         fig, ax = plt.subplots(figsize=(6, 6))
-        ax.set_title(f"SIRS Spread at t={t_freeze}")
         ax.set_xticks([])
         ax.set_yticks([])
 
@@ -379,7 +378,7 @@ class Networks:
         # ax.plot(t, percentage_R, label="R", linewidth=2)
         ax.set_xlabel("Time (days)")
         ax.set_ylabel("Percentage of Population Infected")
-        ax.set_title(title)
+        # ax.set_title(title)
         if vline:
             ax.axvline(x=vline, label=f't={vline} days', color='red', ls='dotted')
         ax.legend()
@@ -607,3 +606,98 @@ class Networks:
             frac_secondary[step] = ever_lc[1] / total if total > 0 else 0.0
 
         return t, S, I, R, new_inf, ever_inf_frac, frac_secondary, state
+    
+    @staticmethod
+    def snapshot_sirs_lineage_grid(A, L, alpha, gamma, omega, t_freeze=50,
+                                I0=10, seed=0, p=0):
+        """Akin to snapshot_sirs_grid but also highlights secondary lineage individuals as yellow."""
+        
+        rng = np.random.default_rng(seed)
+        N = L * L
+        if A.shape != (N, N):
+            raise ValueError(f"A must be shape ({N},{N}) for L={L}")
+
+        # split network once
+        A_local, A_long = Networks.split_local_long(A, L)
+
+        # init state
+        state = np.zeros(N, dtype=np.int8)   # 0=S, 1=I, 2=R
+        init = rng.choice(N, size=min(I0, N), replace=False)
+        state[init] = 1
+
+        # lineage labels: -1=never, 0=primary, 1=secondary
+        lineage_labels = np.full(N, -1, dtype=np.int8)
+        lineage_labels[init] = 0
+
+        # evolve
+        for t in range(1, t_freeze + 1):
+            prev_state = state.copy()
+            infected_prev = (prev_state == 1)
+
+            state = Networks.sirs_step(A, prev_state, alpha, gamma, omega, rng)
+
+            newly = (prev_state == 0) & (state == 1)
+
+            if np.any(newly):
+                infected_prev_int = infected_prev.astype(np.int8)
+
+                # Stage 1: direct secondary
+                has_any_long  = (np.asarray(A_long  @ infected_prev_int).ravel() > 0)
+                has_any_local = (np.asarray(A_local @ infected_prev_int).ravel() > 0)
+                direct_secondary = newly & has_any_long 
+
+                # Stage 2: descendants
+                is_primary_inf   = (infected_prev & (lineage_labels == 0)).astype(np.int8)
+                is_secondary_inf = (infected_prev & (lineage_labels == 1)).astype(np.int8)
+
+                has_primary_parent   = (np.asarray(A @ is_primary_inf).ravel() > 0)
+                has_secondary_parent = (np.asarray(A @ is_secondary_inf).ravel() > 0)
+
+                secondary_descendant = newly & has_secondary_parent & ~has_primary_parent
+
+                pure_s = direct_secondary | secondary_descendant
+
+                lineage_labels[newly & ~pure_s] = 0
+                lineage_labels[pure_s]          = 1
+
+        # build plotting state:
+        # 0=S, 1=primary infected, 2=secondary infected, 3=R
+        plot_state = np.zeros(N, dtype=np.int8)
+
+        plot_state[state == 0] = 0
+        plot_state[(state == 1) & (lineage_labels == 0)] = 1
+        plot_state[(state == 1) & (lineage_labels == 1)] = 2
+        plot_state[state == 2] = 3
+
+        # plot
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+        cmap = ListedColormap(["green", "red", "yellow", "blue"])
+        norm = BoundaryNorm([-0.5, 0.5, 1.5, 2.5, 3.5], cmap.N)
+
+        ax.imshow(
+            plot_state.reshape(L, L),
+            cmap=cmap,
+            norm=norm,
+            interpolation="nearest"
+        )
+
+        S = np.sum(state == 0)
+        I = np.sum(state == 1)
+        R = np.sum(state == 2)
+        sec = np.sum((state == 1) & (lineage_labels == 1))
+
+        ax.text(
+            0.02, 0.98,
+            f"t={t_freeze} days   S={100*S/N:.1f}%   I={100*I/N:.1f}%   R={100*R/N:.1f}%   p={p}",
+            transform=ax.transAxes,
+            va="top",
+            bbox=dict(facecolor="white", alpha=0.7, edgecolor="none")
+        )
+
+        plt.tight_layout()
+        plt.show()
+
+        return state, lineage_labels

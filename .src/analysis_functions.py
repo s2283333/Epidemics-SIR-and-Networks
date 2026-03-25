@@ -4,7 +4,7 @@ from sirs_network_model import Networks
 from scipy.optimize import curve_fit
 
 
-def compute_thresholds(ps, alphas, n_seeds):
+def compute_thresholds(L, ps, alphas, n_seeds):
     """
     Calculate epidemic threshold for a given array of ps. This allows more targetted
     alpha ranges for diffferent ranges of p, saving time. 
@@ -61,19 +61,30 @@ def compute_thresholds(ps, alphas, n_seeds):
 
 def fit_models(p, R0_mean, R0_se, is_small_dataset=True):
     """
-    Fit exponential and logarithmic models to R0(p). Returns chi-squared and residuals.
+    Fit exponential and logarithmic models to R0(p).
+
+    If is_small_dataset=True:
+        - fit only p < 0.05
+        - produce the logarithmic diagnostic plot exactly as before
+
+    If is_small_dataset=False:
+        - fit the full dataset
+        - produce the normal exponential fit over the data
     """
+
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from scipy.optimize import curve_fit
 
     # Exponential model
     def exp_plateau(p, R_inf, A, k):
         return R_inf + A * np.exp(-k * p)
-    
-    # Logarithmic model (not used)
+
+    # Logarithmic model
     def log_model(p, a, b):
         return a + b * np.log(p)
 
-    
-    # For fitting our p<0.05 data.
+    # Dataset selection
     if is_small_dataset:
         mask = p < 0.05
         p = p[mask]
@@ -99,46 +110,70 @@ def fit_models(p, R0_mean, R0_se, is_small_dataset=True):
     exp_residuals = R0 - exp_pred
     chi2_exp = np.sum((exp_residuals / R0_err) ** 2)
 
-
-    # Exponential diagnostic plot
-    # NB. R_inf and lambda are used to mean the same thing (the expected value of R0 at p=infinity)
-    R_excess = R0 - R_inf
-    valid_exp = R_excess > 0
-
-    p_exp = p[valid_exp]
-    R_excess_exp = R_excess[valid_exp]
-    R0_err_exp = R0_err[valid_exp]
-
-    log_vals = np.log(R_excess_exp)
-    log_se = R0_err_exp / R_excess_exp
-    coeffs = np.polyfit(p_exp, log_vals, 1, w=1 / log_se)
-
-    plt.figure()
-    plt.errorbar(
-        p_exp,
-        log_vals,
-        yerr=log_se,
-        fmt='o',
-        markersize=4,
-        capsize=3,
-        label=r'$\ln(R_0 - \lambda)$'
-    )
-    plt.plot(
-        p_exp,
-        np.polyval(coeffs, p_exp)
-    )
-    plt.xlabel('Rewiring probability $p$')
-    plt.ylabel(r'$\ln(R_0 - \lambda)$')
     if is_small_dataset:
-        plt.title('Low-$p$ Exponential Fit Test')
-    else:
-        plt.title('Exponential Fit over Full $p$ Range')
-    plt.show()
+        # Exponential diagnostic plot
+        # NB. R_inf and lambda are used to mean the same thing
+        R_excess = R0 - R_inf
+        valid_exp = R_excess > 0
 
+        p_exp = p[valid_exp]
+        R_excess_exp = R_excess[valid_exp]
+        R0_err_exp = R0_err[valid_exp]
+
+        log_vals = np.log(R_excess_exp)
+        log_se = R0_err_exp / R_excess_exp
+        coeffs = np.polyfit(p_exp, log_vals, 1, w=1 / log_se)
+
+        plt.figure()
+        plt.errorbar(
+            p_exp,
+            log_vals,
+            yerr=log_se,
+            fmt='o',
+            markersize=4,
+            capsize=3,
+            label=r'$\ln(R_{0,c} - \lambda)$'
+        )
+        plt.plot(
+            p_exp,
+            np.polyval(coeffs, p_exp),
+            label='Exponential fit'
+        )
+        plt.xlabel('Rewiring probability $p$')
+        plt.ylabel(r'$\ln(R_{0,c} - \lambda)$')
+        plt.title('Low-$p$ Exponential Scaling')
+        plt.legend()
+        plt.show()
+
+    else:
+        # Normal fit-over-data plot for full dataset
+        p_fit = np.linspace(np.min(p), np.max(p), 500)
+        R0_fit = exp_plateau(p_fit, R_inf, A, k)
+
+        plt.figure()
+        plt.errorbar(
+            p,
+            R0,
+            yerr=R0_err,
+            fmt='o',
+            markersize=4,
+            capsize=3,
+            label=r'$R_{0,c}$'
+        )
+        plt.plot(
+            p_fit,
+            R0_fit,
+            label='Exponential fit'
+        )
+        plt.xlabel('Rewiring probability $p$')
+        plt.ylabel(r'$R_{0,c}$')
+        plt.title('Full-$p$ Range Exponential Scaling')
+        plt.legend()
+        plt.show()
+
+        coeffs = None
 
     # Logarithmic fit
-    
-    # Preventing error
     mask_log = p > 0
     p_log = p[mask_log]
     R_log = R0[mask_log] - R_inf
@@ -157,30 +192,30 @@ def fit_models(p, R0_mean, R0_se, is_small_dataset=True):
     log_residuals = R0[mask_log] - log_pred
     chi2_log = np.sum((log_residuals / R0_err[mask_log]) ** 2)
 
+    # Keep the logarithmic fit plot exactly as before for small dataset only
+    if is_small_dataset:
+        x_log = np.log(p_log)
+        x_curve = np.linspace(x_log.min(), x_log.max(), 400)
+        p_curve = np.exp(x_curve)
 
-    # Logarithmic fit plot
-    x_log = np.log(p_log)
-    x_curve = np.linspace(x_log.min(), x_log.max(), 400)
-    p_curve = np.exp(x_curve)
-
-    plt.figure()
-    plt.errorbar(
-        x_log,
-        R_log,
-        yerr=R_err_log,
-        fmt='o',
-        markersize=4,
-        capsize=3,
-        label=r'$R_0 - \lambda$'
-    )
-    plt.plot(
-        x_curve,
-        log_model(p_curve, a, b)
-    )
-    plt.xlabel(r'$\ln(p)$')
-    plt.ylabel(r'$R_0 - \lambda$')
-    plt.title('Low-$p$ Logarithmic Fit Test')
-    plt.show()
+        plt.figure()
+        plt.errorbar(
+            x_log,
+            R_log,
+            yerr=R_err_log,
+            fmt='o',
+            markersize=4,
+            capsize=3,
+            label=r'$R_0 - \lambda$'
+        )
+        plt.plot(
+            x_curve,
+            log_model(p_curve, a, b)
+        )
+        plt.xlabel(r'$\ln(p)$')
+        plt.ylabel(r'$R_0 - \lambda$')
+        plt.title('Low-$p$ Logarithmic Fit Test')
+        plt.show()
 
     return exp_params, log_params, chi2_exp, chi2_log, coeffs, exp_residuals, log_residuals
 
@@ -333,7 +368,8 @@ def sweep_secondary_fraction(L, alpha, gamma, omega, I0=5, T=50,
                               n_p=15, p_max=0.05, n_runs=10,
                               is_sirs=False):
     """
-    Sweep p from 0 to p_max and plot the fraction of infections occuring PURELY from secondary seeds.
+    Sweep p from 0 to p_max and plot the fraction of infections occuring
+    PURELY from secondary seeds (aka of secondary lineage).
     """
     ps = np.linspace(0, p_max, n_p)
     means = np.zeros(n_p)
@@ -368,11 +404,9 @@ def sweep_secondary_fraction(L, alpha, gamma, omega, I0=5, T=50,
     )
 
     ax.set_xlabel("Rewiring probability $p$")
-    ax.set_ylabel(f"Fraction at t = {T}")
-    ax.set_title("Fraction of Infections from Secondary Seeds")
+    ax.set_ylabel(f"Proportion with Secondary Lineage ($t$ = {T} days)")
     ax.set_xlim(0, p_max)
     ax.set_ylim(0, 1)
-    ax.legend(loc="lower right")
     plt.tight_layout()
     plt.show()
     

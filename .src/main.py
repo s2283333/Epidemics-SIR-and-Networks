@@ -87,12 +87,12 @@ def main():
     A = Networks.small_world_2d_torus_k8(L=400, p=0.05, seed=0)
 
     t, S, I, R, _, _, final_state = Networks.run_sirs(A, alpha=0.6/8, gamma=0.14, omega=0.01, I0=5, T=1000, seed=0)
-    anim = Networks.snapshot_sirs_grid(A,400, 0.6/8,0.14,0.01, t_freeze=50, seed=0, I0=5,p=0.05)
+    anim = Networks.snapshot_sirs_grid(A,400, 0.6/8,0.14,0.01, t_freeze=55, seed=0, I0=5,p=0.05)
     Networks.plot_sirs_time_series(t, S, I, R,L=400, vline=50)
     
 
     # EPIDEMIC THRESHOLD
-    # -------------------
+ 
     # Below is a theoretical way to do the entire datasets in one go. However this will take a
     # very long time to run so in practice ths was done by splitting the data into mini sets and
     # doing bit by bit. This still took over 10 hours to run on my device
@@ -102,7 +102,7 @@ def main():
     alphas = np.linspace(0.02, 0.05, 50)
     n_networks = 20
     n_seeds = 50
-
+    L=200
     all_alpha_cs = np.full((n_networks, len(ps)), np.nan)
     all_R0_cs = np.full((n_networks, len(ps)), np.nan)
 
@@ -110,7 +110,7 @@ def main():
         print(f"\nNetwork realisation {i+1}/{n_networks}")
 
         # set the network seed inside your function however you want
-        alpha_c_vals, R0_c_vals = compute_thresholds(ps, alphas, n_seeds)
+        alpha_c_vals, R0_c_vals = compute_thresholds(ps, alphas, n_seeds,L)
 
         all_alpha_cs[i, :] = alpha_c_vals
         all_R0_cs[i, :] = R0_c_vals
@@ -137,15 +137,15 @@ def main():
 
     ax1.set_title('Epidemic Threshold as a Function of Rewiring Probability')
     ax1.set_xlabel('Rewiring Probability $p$')
-    ax1.set_ylabel(r'Threshold $\alpha$')
+    ax1.set_ylabel(r'Threshold $\alpha_c$')
 
     ax2 = ax1.twinx()
     ax2.set_ylim(np.array(ax1.get_ylim()) * 8 / gamma)
-    ax2.set_ylabel(r'Threshold $R_0$')
+    ax2.set_ylabel(r'Threshold $R_{0,c}$')
 
     plt.show()
     
-    R0_se = R0_c_std/np.sqrt(20)
+    R0_se = R0_c_err
     _, _, chi1, chi2,_ , res_exp, log_res = fit_models(ps, R0_c_mean, R0_se, is_small_dataset=False)
     
     # Exponential residuals
@@ -185,10 +185,25 @@ def main():
     
     # REDUCED DATASET
     ps = np.linspace(0.0, 0.05, 10) 
+    small_alpha_cs = np.full((n_networks, len(ps)), np.nan)
+    small_R0_cs = np.full((n_networks, len(ps)), np.nan)
     
-    R0_c_mean, R0_c_std, alpha_c_mean, alpha_c_std = compute_thresholds(ps)
+    for i in range(n_networks):
+        print(f"\nNetwork realisation {i+1}/{n_networks}")
+
+        # set the network seed inside your function however you want
+        alpha_c_vals, R0_c_vals = compute_thresholds(ps, alphas, n_seeds,L)
+
+        small_alpha_cs[i, :] = alpha_c_vals
+        small_R0_cs[i, :] = R0_c_vals
+
+    # Mean across network realisations
+    alpha_c_mean = np.nanmean(all_alpha_cs, axis=0)
+    R0_c_mean = np.nanmean(all_R0_cs, axis=0)
     
-    _, _, chi1_reduced_dataset, chi2_reduced_dataset,_ , res_exp, log_res = fit_models(ps, R0_c_mean, R0_c_std/np.sqrt(20), is_small_dataset=True)
+    alpha_c_err = np.nanstd(all_alpha_cs, axis=0, ddof=1) / np.sqrt(n_networks)
+    R0_c_err = np.nanstd(all_R0_cs, axis=0, ddof=1) / np.sqrt(n_networks)
+    _, _, chi1_reduced_dataset, chi2_reduced_dataset,_ , res_exp, log_res = fit_models(ps, R0_c_mean, R0_c_mean, is_small_dataset=True)
     
     
 
@@ -227,7 +242,7 @@ def main():
             label=f'L={L}'
         )
     plt.xlabel(r'Rewiring Probability $p$')
-    plt.ylabel('Time of Peak Infection')
+    plt.ylabel('Time of Peak Infection (days)')
     plt.title('Time of Peak Infection as a Function of Rewiring Probability')
     plt.legend()
     plt.show()
@@ -268,6 +283,8 @@ def main():
     plt.ylabel('Mean Oscillation Period (days)')
     plt.title('Oscillation Period as a Function of Rewiring Probability')
     plt.show()
+    
+    # Long term time series
     ps = [0.0, 0.01, 0.05]
     L = 200
 
@@ -283,7 +300,7 @@ def main():
             gamma=0.14,
             omega=0.01,
             I0=10,
-            T=1500,
+            T=10000,
             seed=200,
             is_sirs=True
         )
@@ -301,7 +318,7 @@ def main():
             va="top"
         )
 
-        axes[i].set_ylabel(r"$I_{inf}(t)$")
+        axes[i].set_ylabel(r"$I(t)/N$")
 
     axes[-1].set_xlabel("Time (days)")
 
@@ -321,9 +338,9 @@ def main():
     I0 = 10
     seed = 0
 
-    # -----------------------------
+
     # Plot 1: Hub-driven infections
-    # -----------------------------
+
     plt.figure()
 
     for p in ps:
