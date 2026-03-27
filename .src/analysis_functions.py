@@ -10,7 +10,7 @@ Key capabilities:
 - Collect and compare peak infection statistics across system sizes
 - Track cumulative infection dynamics and secondary infection lineages
 - Characterize how network topology influences epidemic behavior
-""""
+"""
 
 from matplotlib import pyplot as plt
 import numpy as np
