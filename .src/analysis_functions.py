@@ -1,4 +1,4 @@
-""""
+"""
 Analysis functions for epidemic modelling on small-world networks.
 This module provides utilities for analysing SIRS disease dynamics on 2D torus small-world networks.
 It includes functions for computing epidemic thresholds, fitting phenomenological models to threshold data,
