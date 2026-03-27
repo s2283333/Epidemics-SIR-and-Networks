@@ -1,8 +1,8 @@
 """"
-Analysis functions for epidemic modeling on small-world networks.
-This module provides utilities for analyzing SIRS disease dynamics on 2D torus small-world networks.
+Analysis functions for epidemic modelling on small-world networks.
+This module provides utilities for analysing SIRS disease dynamics on 2D torus small-world networks.
 It includes functions for computing epidemic thresholds, fitting phenomenological models to threshold data,
-analyzing peak infection statistics, and investigating the role of network rewiring on disease spread.
+analysing peak infection statistics, and investigating the role of network rewiring on disease spread.
 Key capabilities:
 - Compute critical transmission rates (alpha_c) and basic reproduction numbers (R0_c) across network parameters
 - Fit exponential and logarithmic models to threshold data with residual analysis
@@ -15,7 +15,6 @@ Key capabilities:
 from matplotlib import pyplot as plt
 import numpy as np
 from sirs_network_model import Networks
-from scipy.optimize import curve_fit
 
 
 def compute_thresholds(L, ps, alphas, n_seeds):
